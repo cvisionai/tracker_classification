@@ -72,7 +72,7 @@ def classify_track(media_id,
     if len(proposed_track_element) >= minimum_length:
         angle,speed,_ = track_vel(proposed_track_element)
         angle = math.degrees(angle)
-        for class_name,angles in names:
+        for class_name,angles in names.items():
             if angle >= angles[0] and angle <= angles[1]:
                 return True,{label:class_name,
                              'length': len(proposed_track_element),
