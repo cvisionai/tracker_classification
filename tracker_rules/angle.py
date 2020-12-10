@@ -62,20 +62,20 @@ def classify_track(media_id,
                          "label": "Direction",
                          "names": {
                                           #Low,High
-                             "Entering": [315,360]
-                             "Entering": [0,45],
-                             "Exiting": [90,270],
-                             "Unknown": [0,360] # catch all
+                             "Entering": [[50,85],[315,360]]
+                             "Exiting": [[90,270]],
+                             "Unknown": [[0,360]] # catch all
                                   }
                          }
     """
     if len(proposed_track_element) >= minimum_length:
         angle,speed,_ = track_vel(proposed_track_element)
         angle = math.degrees(angle)
-        for class_name,angles in names.items():
-            if angle >= angles[0] and angle <= angles[1]:
-                return True,{label:class_name,
-                             'length': len(proposed_track_element),
-                             'speed': speed,
-                             'angle': angle}
+        for class_name,angles_list in names.items():
+            for angles in angles_list:
+                if angle >= angles[0] and angle <= angles[1]:
+                    return True,{label:class_name,
+                                 'length': len(proposed_track_element),
+                                 'speed': speed,
+                                 'angle': angle}
     return False,None
