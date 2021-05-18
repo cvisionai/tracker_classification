@@ -36,7 +36,7 @@ def track_vel(track):
         # unfurl radian
         if angle < 0:
             angle = 2*math.pi + angle
-        distance = np.sqrt(math.pow(l_cx-f_cx, 2) + math.pow(l_cy-f_cy, 2))
+        distance = math.sqrt(math.pow(l_cx-f_cx, 2) + math.pow(l_cy-f_cy, 2))
     return (angle, magnitude,[x_vel,y_vel], distance)
 
 def classify_track(media_id,
