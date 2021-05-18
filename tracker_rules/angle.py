@@ -30,18 +30,21 @@ def track_vel(track):
         angle = 0
         x_vel = 0
         y_vel = 0
+        distance = 0
     else:
         angle = math.atan2(y_vel, x_vel)
         # unfurl radian
         if angle < 0:
             angle = 2*math.pi + angle
-    return (angle, magnitude,[x_vel,y_vel])
+        distance = np.sqrt(math.pow(l_cx-f_cx, 2) + math.pow(l_cy-f_cy, 2))
+    return (angle, magnitude,[x_vel,y_vel], distance)
 
 def classify_track(media_id,
                    proposed_track_element,
                    minimum_length=2,
                    label='Label',
-                   names={}):
+                   names={},
+                   minimum_distance=0):
     
     """ 
         :media_id: ID of media track will belong to
@@ -55,6 +58,7 @@ def classify_track(media_id,
         - label: "Name to use for the direction assignment" (default label)
         - names : Dictionary of names to angle space (inclusive)
                               (Default: {})
+        - minimum_distance: Minimum number of pixels traveled by the track (last minus first).
         Example:
         # Sets 2 classes, entering (Left quadrants) exit (+/- 45 over right)
         # minimum track length is 20 detections
@@ -69,13 +73,15 @@ def classify_track(media_id,
                          }
     """
     if len(proposed_track_element) >= minimum_length:
-        angle,speed,_ = track_vel(proposed_track_element)
-        angle = math.degrees(angle)
-        for class_name,angles_list in names.items():
-            for angles in angles_list:
-                if angle >= angles[0] and angle <= angles[1]:
-                    return True,{label:class_name,
-                                 'length': len(proposed_track_element),
-                                 'speed': speed,
-                                 'angle': angle}
+        angle,speed,_, distance = track_vel(proposed_track_element)
+        if distance >= minimum_distance:
+            angle = math.degrees(angle)
+            for class_name,angles_list in names.items():
+                for angles in angles_list:
+                    if angle >= angles[0] and angle <= angles[1]:
+                        return True,{label:class_name,
+                                     'length': len(proposed_track_element),
+                                     'speed': speed,
+                                     'angle': angle,
+                                     'distance': distance}
     return False,None
