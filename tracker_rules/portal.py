@@ -53,8 +53,8 @@ def worms_classify(media_id, proposed_track_element, **args):
                 extended_attrs["Species"] = species
             for x in ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus"]:
                 record = aphia_record.get(x.lower(), "")
-                extended_attrs[x] = record
                 if record:
+                    extended_attrs[x] = record
                     extended_attrs[f"{x}_confidence"] = _round_to_bin(avg_conf)
         else:
             print(f"ERROR: {label} not found in WoRMs API")
