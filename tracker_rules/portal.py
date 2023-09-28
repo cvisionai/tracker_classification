@@ -9,7 +9,7 @@ def _round_to_bin(float_val):
     if float_val < 0.25:
         return "0"
     elif float_val < 0.75:
-        return "0.5"
+        return ".5"
     else:
         return "1"
 
