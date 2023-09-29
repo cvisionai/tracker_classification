@@ -14,6 +14,37 @@ def _round_to_bin(float_val):
         return "1"
 
 
+def _worms_rank_to_portal(worms_rank):
+    """Not all worms ranks exist in portal. This truncates to the neartest rank"""
+    portal_ranks = [
+        "Object type",
+        "Kingdom",
+        "Phylum",
+        "Class",
+        "Order",
+        "Family",
+        "Genus",
+        "Species",
+        "null",
+        "Label",
+    ]
+    portal_rank = "null"
+    if worms_rank in portal_ranks:
+        portal_rank = worms_rank
+    elif worms_rank in ["Subclass", "Superorder"]:
+        portal_rank = "Class"
+    elif worms_rank in ["Suborder"]:
+        portal_rank = "Order"
+    elif worms_rank in ["Subfamily", "Tribe"]:
+        portal_rank = "Family"
+    elif worms_rank in ["Variety"]:
+        portal_rank = "Species"
+    else:
+        print(f"WARNING: Unhandled taxonomic level '{worms_rank}'!")
+
+    return portal_rank
+
+
 def worms_classify(media_id, proposed_track_element, **args):
     """Update portal attributes based on existing labels"""
     box_label_attr = args.get("box_label_attribute", "Label")
@@ -42,7 +73,7 @@ def worms_classify(media_id, proposed_track_element, **args):
         )
         if response.status_code == 200:
             aphia_record = json.loads(response.content)
-            rank = aphia_record["rank"]
+            rank = _worms_rank_to_portal(aphia_record["rank"])
             extended_attrs["LabelRank"] = rank
             if rank == "Species":
                 species = (
