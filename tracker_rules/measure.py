@@ -6,7 +6,6 @@ from statistics import median
 
 def measure_classify(media_id, proposed_track_element, **args):
     api = tator.get_api(host=args["host"], token=args["token"])
-    print("Media id is: ", media_id)
     media = api.get_media(media_id)
 
     dimension = args.get("dimension", "both")
@@ -20,9 +19,9 @@ def measure_classify(media_id, proposed_track_element, **args):
             for loc in proposed_track_element
         ]
     elif dimension == "width":
-        sizes = [loc["width"] * media.width for loc in locs]
+        sizes = [loc["width"] * media.width for loc in proposed_track_element]
     elif dimension == "height":
-        sizes = [loc["height"] * media.height for loc in locs]
+        sizes = [loc["height"] * media.height for loc in proposed_track_element]
     else:
         raise ValueError(
             f"Invalid dimension '{dimension}', must be one of "
@@ -34,7 +33,8 @@ def measure_classify(media_id, proposed_track_element, **args):
         size = sum(sizes) / len(sizes)
     elif method == "center":
         centers = [
-            (loc.x + loc["width"] / 2, loc.y + loc["height"] / 2) for loc in locs
+            (loc["x"] + loc["width"] / 2, loc["y"] + loc["height"] / 2)
+            for loc in proposed_track_element
         ]
         dists = [
             math.sqrt((x - 0.5) * (x - 0.5) + (y - 0.5) * (y - 0.5)) for x, y in centers
