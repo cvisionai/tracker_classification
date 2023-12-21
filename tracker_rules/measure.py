@@ -5,7 +5,7 @@ from statistics import median
 
 
 def measure_classify(media_id, proposed_track_element, **args):
-    api = tator.get_api(host=args["_host"], token=args["_token"])
+    api = tator.get_api(host=args["host"], token=args["token"])
     print("Media id is: ", media_id)
     media = api.get_media(media_id)
 
