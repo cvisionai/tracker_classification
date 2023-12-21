@@ -79,8 +79,8 @@ if __name__ == "__main__":
     extended_attrs = measure_classify(
         state_obj.media[0],
         [l.to_dict() for l in localizations],
-        _host=args.host,
-        _token=args.token,
+        host=args.host,
+        token=args.token,
         scale_factor=args.scale_factor,
     )
     print(f"Source (ID={args.state_id})")
