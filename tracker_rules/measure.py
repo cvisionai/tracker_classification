@@ -10,7 +10,7 @@ def measure_classify(media_id, proposed_track_element, **args):
 
     dimension = args.get("dimension", "both")
     method = args.get("method", "median")
-    transform = args.get("transform", "scallops")
+    transform = args.get("transform", "none")
     scale_factor = args.get("scale_factor", 1.0)
 
     if dimension == "both":
