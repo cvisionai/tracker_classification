@@ -105,8 +105,20 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
     method = args.get("method", "median")
     transform = args.get("transform", "none")
     scale_factor = args.get("scale_factor", 1.0)
+    working_size = args.get("working_size", 512)
+    kernel_size = args.get("kernel_size", 77)
+    iterations = args.get("iterations", 10)
 
     polys = [p for p in proposed_track_element if p.get("points", []) != []]
+    boxes = [p for p in proposed_track_element if p.get("x") is not None]
+
+    box_centers = [
+        (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2) for box in boxes
+    ]
+    box_dists = [
+        math.sqrt((x - 0.5) * (x - 0.5) + (y - 0.5) * (y - 0.5)) for x, y in box_centers
+    ]
+    box_nearest = np.argmin(box_dists)
 
     # If we have no polygons, we can't measure and it probably isn't a good track
     if polys == []:
@@ -125,29 +137,27 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
     samples = 0
     hq_measurements = []
     lq_measurements = []
+    box_measurements = []
+    box_heights = []
+    box_widths = []
+
+    measure_box = boxes[box_nearest]
+    box_measurement = (
+        math.sqrt(
+            (measure_box["width"] * media.width) ** 2
+            + (measure_box["height"] * media.height) ** 2
+        )
+        * scale_factor
+    )
+    box_measurements.append(box_measurement)
+    box_heights.append(measure_box["height"] * media.height * scale_factor)
+    box_widths.append(measure_box["width"] * media.width * scale_factor)
 
     for idx, poly in enumerate(polys[min_idx:max_idx]):
-        if samples > 5:
-            break
         frame = poly["frame"]
-        # Calculate lq measurement for all polygons
-        distances = [
-            (p1, p2, np.linalg.norm(np.array(p1) - np.array(p2)))
-            for p1 in poly["points"]
-            for p2 in poly["points"]
-        ]
-        major_axis_points = max(distances, key=lambda x: x[2])[:2]
 
-        if idx == window:
-            # Calculate the vector of the major axis for lq at center most poly
-            lq_measurement_line = np.array([major_axis_points[0], major_axis_points[1]])
-            lq_measurement_line[:, 0] *= media.width
-            lq_measurement_line[:, 1] *= media.height
-            lq_measurement_line = lq_measurement_line * scale_factor
-            lq_measurement_length = np.linalg.norm(
-                lq_measurement_line[1] - lq_measurement_line[0]
-            )
-            lq_measurements.append(lq_measurement_length)
+        if samples > 2:
+            continue
 
         contour = np.array(poly["points"])
         xmin = np.min(contour[:, 0])
@@ -158,11 +168,11 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
         contour[:, 0] = (contour[:, 0] - xmin) / (xmax - xmin)
         contour[:, 1] = (contour[:, 1] - ymin) / (ymax - ymin)
 
-        scaled_contour = contour * 2000
-        image = np.zeros((2000, 2000), dtype=np.float32)
+        scaled_contour = contour * working_size
+        image = np.zeros((working_size, working_size), dtype=np.float32)
         cv2.fillPoly(image, [scaled_contour.astype(int)], 255)
 
-        image = cv2.GaussianBlur(image, (301, 301), 0)
+        image = cv2.GaussianBlur(image, (kernel_size, kernel_size), 0)
 
         # Create a mask to exclude corners near the image edges
         mask = np.zeros_like(image, dtype=np.uint8)
@@ -174,11 +184,11 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
         # Shrink and dilate the image to remove noise
         # Shrink the image to remove noise
         shrink_kernel = np.ones((5, 5), np.uint8)
-        shrinked_image = cv2.erode(thresh_image, shrink_kernel, iterations=10)
+        shrinked_image = cv2.erode(thresh_image, shrink_kernel, iterations=iterations)
 
         # Dilate the image to smooth corners
         dilate_kernel = np.ones((5, 5), np.uint8)
-        thresh_image = cv2.dilate(shrinked_image, dilate_kernel, iterations=10)
+        thresh_image = cv2.dilate(shrinked_image, dilate_kernel, iterations=iterations)
 
         # Find the contour of the blurred image
         blur_contours, _ = cv2.findContours(
@@ -238,6 +248,14 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
             final_inside_corners.append(farthest_point)
 
         final_inside_corners = np.array(final_inside_corners)
+
+        handle_length = np.linalg.norm(
+            final_inside_corners[1] - final_inside_corners[0]
+        )
+
+        # Don't let small handles in
+        if handle_length < 0.5 * working_size:
+            continue
 
         handle_center = average_point(final_inside_corners)
 
@@ -315,7 +333,7 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
 
         # Now that is a confirmed HQ Measurement we can add it to the list
         hq_measurement_line = np.array(measurement_line)
-        hq_measurement_line = hq_measurement_line / 2000
+        hq_measurement_line = hq_measurement_line / working_size
         hq_measurement_line[:, 0] = hq_measurement_line[:, 0] * (xmax - xmin) + xmin
         hq_measurement_line[:, 1] = hq_measurement_line[:, 1] * (ymax - ymin) + ymin
         hq_measurement_line[:, 0] *= media.width
@@ -329,18 +347,18 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
         # Use the boolean value is_90_degrees as needed
 
         # Convert to image abs coordinates
-        final_inside_corners = final_inside_corners / 2000
+        final_inside_corners = final_inside_corners / working_size
         final_inside_corners[:, 0] = final_inside_corners[:, 0] * (xmax - xmin) + xmin
         final_inside_corners[:, 1] = final_inside_corners[:, 1] * (ymax - ymin) + ymin
 
-        closest_intersection_before = closest_intersection_before / 2000
+        closest_intersection_before = closest_intersection_before / working_size
         closest_intersection_before[0] = (
             closest_intersection_before[0] * (xmax - xmin) + xmin
         )
         closest_intersection_before[1] = (
             closest_intersection_before[1] * (ymax - ymin) + ymin
         )
-        closest_intersection_after = closest_intersection_after / 2000
+        closest_intersection_after = closest_intersection_after / working_size
         closest_intersection_after[0] = (
             closest_intersection_after[0] * (xmax - xmin) + xmin
         )
@@ -375,10 +393,18 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
         samples += 1
 
     attrs = {}
+    measure_type_name = args.get("measure_type_attr", None)
     if hq_measurements:
-        print(f"High quality measurements: {hq_measurements}")
-    print(f"Low quality measurements: {lq_measurements}")
-    print(f"Time: {time.time() - before}")
+        attrs[args.get("size_attr", "Size (mm)")] = median(hq_measurements)
+        if measure_type_name:
+            attrs[measure_type_name] = "HandleCentroid"
+    else:
+        average_dim = (box_heights[0] + box_widths[0]) / 2
+        attrs[args.get("size_attr", "Size (mm)")] = average_dim
+        if measure_type_name:
+            attrs[measure_type_name] = "BoxDimMean"
+
+    # print(f"Time: {time.time() - before}")
     attrs.update({"$new": new})
     return True, attrs
 
