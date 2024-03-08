@@ -267,14 +267,33 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
         closest_intersection_before = np.array(closest_intersection_before)
         closest_intersection_after = np.array(closest_intersection_after)
 
+        measurement_line = [closest_intersection_before, closest_intersection_after]
+
+        # Calculate the dot product of the two vectors
+        dot_product = np.dot(
+            measurement_line[1] - measurement_line[0],
+            final_inside_corners[1] - final_inside_corners[0],
+        )
+
+        # Calculate the magnitudes of the two vectors
+        magnitude1 = np.linalg.norm(measurement_line[1] - measurement_line[0])
+        magnitude2 = np.linalg.norm(final_inside_corners[1] - final_inside_corners[0])
+
+        # Calculate the cosine of the angle between the two vectors
+        cosine_angle = dot_product / (magnitude1 * magnitude2)
+
+        # Calculate the angle in degrees
+        angle = np.arccos(cosine_angle) * 180 / np.pi
+
+        if np.abs(angle - 90) > 5:
+            continue
+
+        # Use the boolean value is_90_degrees as needed
+
+        # Convert to image abs coordinates
         final_inside_corners = final_inside_corners / 2000
         final_inside_corners[:, 0] = final_inside_corners[:, 0] * (xmax - xmin) + xmin
         final_inside_corners[:, 1] = final_inside_corners[:, 1] * (ymax - ymin) + ymin
-
-        # Lets do the same for centroid
-        centroid = centroid / 2000
-        centroid[0] = centroid[0] * (xmax - xmin) + xmin
-        centroid[1] = centroid[1] * (ymax - ymin) + ymin
 
         closest_intersection_before = closest_intersection_before / 2000
         closest_intersection_before[0] = (
