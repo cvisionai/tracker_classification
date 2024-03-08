@@ -3,6 +3,7 @@ import numpy as np
 import math
 from statistics import median
 import cv2
+import time
 
 
 def measure_classify(media_id, proposed_track_element, **args):
@@ -99,6 +100,7 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
     api = tator.get_api(host=args["host"], token=args["token"])
     media = api.get_media(media_id)
 
+    before = time.time()
     dimension = args.get("dimension", "both")
     method = args.get("method", "median")
     transform = args.get("transform", "none")
@@ -117,13 +119,36 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
         math.sqrt((x - 0.5) * (x - 0.5) + (y - 0.5) * (y - 0.5)) for x, y in centers
     ]
     nearest = np.argmin(dists)
-    min_idx = max(0, nearest - 20)
-    max_idx = min(len(polys), nearest + 20)
+    window = 5
+    min_idx = max(0, nearest - window)
+    max_idx = min(len(polys), nearest + window)
     samples = 0
-    for poly in polys[min_idx:max_idx]:
+    hq_measurements = []
+    lq_measurements = []
+
+    for idx, poly in enumerate(polys[min_idx:max_idx]):
         if samples > 5:
             break
         frame = poly["frame"]
+        # Calculate lq measurement for all polygons
+        distances = [
+            (p1, p2, np.linalg.norm(np.array(p1) - np.array(p2)))
+            for p1 in poly["points"]
+            for p2 in poly["points"]
+        ]
+        major_axis_points = max(distances, key=lambda x: x[2])[:2]
+
+        if idx == window:
+            # Calculate the vector of the major axis for lq at center most poly
+            lq_measurement_line = np.array([major_axis_points[0], major_axis_points[1]])
+            lq_measurement_line[:, 0] *= media.width
+            lq_measurement_line[:, 1] *= media.height
+            lq_measurement_line = lq_measurement_line * scale_factor
+            lq_measurement_length = np.linalg.norm(
+                lq_measurement_line[1] - lq_measurement_line[0]
+            )
+            lq_measurements.append(lq_measurement_length)
+
         contour = np.array(poly["points"])
         xmin = np.min(contour[:, 0])
         ymin = np.min(contour[:, 1])
@@ -232,8 +257,8 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
         closest_distance_after = float("inf")
 
         # Iterate over the segments of the contour
-        for i in range(len(blur_contour)):
-            segment = (blur_contour[i - 1], blur_contour[i])
+        for i in range(len(hull)):
+            segment = (hull[i - 1], hull[i])
             intersection = line_intersection(line, segment)
             if intersection is not None:
                 # Check if the intersection point lies within the line segment
@@ -288,6 +313,19 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
         if np.abs(angle - 90) > 5:
             continue
 
+        # Now that is a confirmed HQ Measurement we can add it to the list
+        hq_measurement_line = np.array(measurement_line)
+        hq_measurement_line = hq_measurement_line / 2000
+        hq_measurement_line[:, 0] = hq_measurement_line[:, 0] * (xmax - xmin) + xmin
+        hq_measurement_line[:, 1] = hq_measurement_line[:, 1] * (ymax - ymin) + ymin
+        hq_measurement_line[:, 0] *= media.width
+        hq_measurement_line[:, 1] *= media.height
+        hq_measurement_line = hq_measurement_line * scale_factor
+        hq_measurement_length = np.linalg.norm(
+            hq_measurement_line[1] - hq_measurement_line[0]
+        )
+        hq_measurements.append(hq_measurement_length)
+
         # Use the boolean value is_90_degrees as needed
 
         # Convert to image abs coordinates
@@ -336,7 +374,13 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
         new.extend([handle_spec, measurement_spec])
         samples += 1
 
-    return True, {"$new": new}
+    attrs = {}
+    if hq_measurements:
+        print(f"High quality measurements: {hq_measurements}")
+    print(f"Low quality measurements: {lq_measurements}")
+    print(f"Time: {time.time() - before}")
+    attrs.update({"$new": new})
+    return True, attrs
 
 
 if __name__ == "__main__":
