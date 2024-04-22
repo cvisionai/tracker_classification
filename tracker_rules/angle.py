@@ -39,13 +39,17 @@ def track_vel(track):
         distance = math.sqrt(math.pow(l_cx-f_cx, 2) + math.pow(l_cy-f_cy, 2))
     return (angle, magnitude,[x_vel,y_vel], distance)
 
-def classify_track(media_id,
-                   proposed_track_element,
-                   minimum_length=2,
-                   label='Label',
-                   names={},
-                   minimum_distance=0):
-    
+
+def classify_track(
+    media_id,
+    proposed_track_element,
+    minimum_length=2,
+    label="Label",
+    names={},
+    minimum_distance=0,
+    **kwargs,  # To handle  extras
+):
+
     """ 
         :media_id: ID of media track will belong to
         :proposed_track_element: list of detections that belong to 
