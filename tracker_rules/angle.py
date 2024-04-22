@@ -88,4 +88,4 @@ def classify_track(
                                      'speed': speed,
                                      'angle': angle,
                                      'distance': distance}
-    return False,None
+    return False, {}
