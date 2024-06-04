@@ -33,12 +33,26 @@ if __name__ == "__main__":
         "--host", help="Tator host URL", default="https://cloud.tator.io"
     )
     parser.add_argument("--token", required=True, help="Tator token")
-    parser.add_argument("media_id", type=int, help="Media ID to finalize")
+    parser.add_argument("media_ids", type=str, help="Media ID to finalize")
     parser.add_argument("state_type_id", type=int, help="State type ID for QR codes")
     args = parser.parse_args()
-    qr_code_foi(
-        args.media_id,
-        host=args.host,
-        token=args.token,
-        state_type_id=args.state_type_id,
-    )
+    api = tator.get_api(host=args.host, token=args.token)
+    state_type_obj = api.get_state_type(args.state_type_id)
+    project = state_type_obj.project
+    raw_media_ids = args.media_ids.split(",")
+    media_ids = []
+    for idx in raw_media_ids:
+        if idx.isdigit():
+            media_ids.append(int(idx))
+        elif idx.find("section:") == 0:
+            section_id = int(idx.split("section:")[1])
+            section_list = api.get_media_list(project, section=section_id)
+            media_ids.extend([m.id for m in section_list])
+
+    for media_id in media_ids:
+        qr_code_foi(
+            media_id,
+            host=args.host,
+            token=args.token,
+            state_type_id=args.state_type_id,
+        )
