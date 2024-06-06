@@ -18,6 +18,8 @@ def qr_code_foi(media_id, **args):
         sorted_codes = sorted(qr_codes, key=lambda x: x.segments[0][0])
         end_of_first = sorted_codes[0].segments[-1][1]
         start_of_second = sorted_codes[1].segments[0][0]
+        start_of_second -= args.get("end_offset", 0)
+        end_of_first += args.get("start_offset", 0)
         if abs(end_of_first - start_of_second) > 50:
             print(f"foi = {end_of_first} to {start_of_second}")
             attrs["fois"] = f"{[[end_of_first, start_of_second]]}"
@@ -33,6 +35,8 @@ if __name__ == "__main__":
         "--host", help="Tator host URL", default="https://cloud.tator.io"
     )
     parser.add_argument("--token", required=True, help="Tator token")
+    parser.add_argument("--end-offset", default=0, type=int)
+    parser.add_argument("--start-offset", default=0, type=int)
     parser.add_argument("media_ids", type=str, help="Media ID to finalize")
     parser.add_argument("state_type_id", type=int, help="State type ID for QR codes")
     args = parser.parse_args()
@@ -55,4 +59,6 @@ if __name__ == "__main__":
             host=args.host,
             token=args.token,
             state_type_id=args.state_type_id,
+            end_offset=args.end_offset,
+            start_offset=args.start_offset,
         )
