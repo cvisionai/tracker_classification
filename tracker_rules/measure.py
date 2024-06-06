@@ -152,7 +152,7 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
     box_measurements.append(box_measurement)
     box_heights.append(measure_box["height"] * media.height * scale_factor)
     box_widths.append(measure_box["width"] * media.width * scale_factor)
-
+    """
     for idx, poly in enumerate(polys[min_idx:max_idx]):
         frame = poly["frame"]
 
@@ -391,7 +391,7 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
         }
         new.extend([handle_spec, measurement_spec])
         samples += 1
-
+    """
     attrs = {}
     measure_type_name = args.get("measure_type_attr", None)
     if hq_measurements:
@@ -418,7 +418,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="https://cloud.tator.io")
     parser.add_argument("--token")
-    parser.add_argument("--scale-factor", type=float, default=0.4242)
+    parser.add_argument("--scale-factor", type=float, default=0.4289)
     parser.add_argument("state_id", type=int)
     args = parser.parse_args()
     api = tator.get_api(host=args.host, token=args.token)
@@ -427,7 +427,8 @@ if __name__ == "__main__":
     localizations = api.get_localization_list_by_id(
         state_type_obj.project, {"ids": state_obj.localizations}
     )
-    extended_attrs = measure_classify(
+
+    extended_attrs = measure_classify_poly(
         state_obj.media[0],
         [l.to_dict() for l in localizations],
         host=args.host,
