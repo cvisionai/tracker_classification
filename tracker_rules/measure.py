@@ -4,6 +4,9 @@ import math
 from statistics import median
 import cv2
 import time
+from pprint import pprint
+from collections import defaultdict
+import json
 
 
 def measure_classify(media_id, proposed_track_element, **args):
@@ -108,9 +111,34 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
     working_size = args.get("working_size", 512)
     kernel_size = args.get("kernel_size", 77)
     iterations = args.get("iterations", 10)
+    min_size = args.get("min_size", 10)
 
     polys = [p for p in proposed_track_element if p.get("points", []) != []]
     boxes = [p for p in proposed_track_element if p.get("x") is not None]
+
+    if len(boxes) < min_size:
+        print("too small")
+        return False, {}
+    if "sgie_secondary_labels" in boxes[0]["attributes"]:
+        class_labels = defaultdict(lambda: [])
+        for box in boxes:
+            sgie_labels = json.loads(box["attributes"]["sgie_secondary_labels"])
+            for label in sgie_labels:
+                for label, score in label.items():
+                    class_labels[label].append(score)
+
+        # Find the label with the highest score
+        max_label = max(class_labels, key=lambda x: sum(class_labels[x]))
+
+        if max_label != "Scallop":
+            print("Not a scallop")
+            return False, {}
+
+        for key, items in class_labels.items():
+            avg_label = sum(items) / len(items)
+            if avg_label > 0.3 and key != "Scallop":
+                print("Probably not a scallop")
+                return True, {"Label": key}
 
     box_centers = [
         (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2) for box in boxes
