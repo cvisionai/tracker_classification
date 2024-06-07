@@ -180,7 +180,7 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
     box_measurements.append(box_measurement)
     box_heights.append(measure_box["height"] * media.height * scale_factor)
     box_widths.append(measure_box["width"] * media.width * scale_factor)
-    """
+
     for idx, poly in enumerate(polys[min_idx:max_idx]):
         frame = poly["frame"]
 
@@ -419,7 +419,7 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
         }
         new.extend([handle_spec, measurement_spec])
         samples += 1
-    """
+
     attrs = {}
     measure_type_name = args.get("measure_type_attr", None)
     if hq_measurements:
