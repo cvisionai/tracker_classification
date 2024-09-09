@@ -130,9 +130,9 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
         # Find the label with the highest score
         max_label = max(class_labels, key=lambda x: sum(class_labels[x]))
 
-        if max_label != "Scallop":
-            print("Not a scallop")
-            return False, {}
+        #if max_label != "Scallop":
+        #    print("Not a scallop")
+        #    return False, {}
 
         for key, items in class_labels.items():
             avg_label = sum(items) / len(items)
