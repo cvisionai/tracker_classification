@@ -333,8 +333,6 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
             head_centroid, tail_centroid, mask.shape
         )
 
-        print(f"p1={head_centroid} p2={tail_centroid} extended_line={extended_line}")
-
         contour_min = contour.reshape(-1, 2) - [x_min, y_min]
 
         # Use a set in case we hit a boundary exactly and get duped
@@ -348,7 +346,6 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
                 if min(p1[0], p2[0]) <= intersection[0] <= max(p1[0], p2[0]) and min(
                     p1[1], p2[1]
                 ) <= intersection[1] <= max(p1[1], p2[1]):
-                    print(f"Intersection = {intersection}, points={p1};{p2}")
                     boundary_hits.add(tuple(intersection))
 
         if len(boundary_hits) != 2:
