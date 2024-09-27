@@ -9,6 +9,89 @@ from collections import defaultdict
 import json
 
 
+def create_mask(polygon):
+    # Create a blank mask
+    # first infer image size from polygon bounds
+    x_min = min([point[0] for point in polygon])
+    x_max = max([point[0] for point in polygon])
+    y_min = min([point[1] for point in polygon])
+    y_max = max([point[1] for point in polygon])
+    image_size = (y_max - y_min, x_max - x_min)
+    mask = np.zeros(image_size, dtype=np.uint8)
+
+    # normalize polygon to coordinates of this image
+    polygon = [(point[0] - x_min, point[1] - y_min) for point in polygon]
+
+    # Define the polygon points and fill the mask
+    polygon = np.array(polygon, np.int32)
+    cv2.fillPoly(mask, [polygon], 255)  # Fill the polygon with white
+
+    return mask, x_min, y_min
+
+
+def is_point_between_lines(point, line1, line2):
+    # Unpack line points
+    p1, p2 = line1
+    p3, p4 = line2
+
+    # Create vectors
+    line1_vec = np.array(p2) - np.array(p1)
+    line2_vec = np.array(p4) - np.array(p3)
+
+    # Vector from line starts to the point
+    vec_to_point1 = np.array(point) - np.array(p1)
+    vec_to_point2 = np.array(point) - np.array(p3)
+
+    # Calculate cross products to determine the relative position
+    cross1 = np.cross(line1_vec, vec_to_point1)
+    cross2 = np.cross(line2_vec, vec_to_point2)
+
+    return (cross1 * cross2 < 0).all()  # Returns True if point is between the lines
+
+
+# Function to calculate Euclidean distance
+def euclidean_dist(pt1, pt2):
+    return np.sqrt((pt1[0] - pt2[0]) ** 2 + (pt1[1] - pt2[1]) ** 2)
+
+
+def extend_line_to_image_bounds(p1, p2, img_shape):
+    height, width = img_shape[:2]
+
+    # Calculate the slope and y-intercept of the line
+    x1, y1 = p1
+    x2, y2 = p2
+    if x1 == x2:  # Vertical line
+        return [(x1, 0), (x1, height - 1)]
+    if y1 == y2:  # Horizontal line
+        return [(0, y1), (width - 1, y1)]
+
+    # Line equation: y = mx + b
+    slope = (y2 - y1) / (x2 - x1)
+    intercept = y1 - slope * x1
+
+    # Find intersections with image boundaries
+    points = []
+
+    # Intersect with left (x = 0) and right (x = width - 1)
+    y_left = slope * 0 + intercept
+    y_right = slope * (width - 1) + intercept
+    if 0 <= y_left < height:
+        points.append((0, int(y_left)))
+    if 0 <= y_right < height:
+        points.append((width - 1, int(y_right)))
+
+    # Intersect with top (y = 0) and bottom (y = height - 1)
+    x_top = (0 - intercept) / slope
+    x_bottom = (height - 1 - intercept) / slope
+    if 0 <= x_top < width:
+        points.append((int(x_top), 0))
+    if 0 <= x_bottom < width:
+        points.append((int(x_bottom), height - 1))
+
+    # Return two points at the boundary
+    return points[:2]
+
+
 def measure_classify(media_id, proposed_track_element, **args):
     api = tator.get_api(host=args["host"], token=args["token"])
     media = api.get_media(media_id)
@@ -99,6 +182,260 @@ def line_intersection(line1, line2):
     return x, y
 
 
+def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
+    api = tator.get_api(host=args["host"], token=args["token"])
+    media = api.get_media(media_id)
+
+    polys = [p for p in proposed_track_element if p.get("points", []) != []]
+    boxes = [p for p in proposed_track_element if p.get("x") is not None]
+
+    measurement_lines = []
+    rotated_bbox = []
+    visualizations = []
+
+    def visualize_line(p1, p2):
+        x = p1[0] / media.width
+        y = p1[1] / media.height
+        u = (p2[0] - p1[0]) / media.width
+        v = (p2[1] - p1[1]) / media.height
+        visualizations.append((x, y, u, v, poly["frame"]))
+
+    for poly in polys:
+        contour = np.array(poly["points"])
+        contour *= [media.width, media.height]
+        contour = contour.astype(np.int32)
+        # Reshape points to correct shape (n_points, 1, 2)
+        contour = contour.reshape((-1, 1, 2))
+
+        # Calculate the convex hull of the contour (to simplify the polygon)
+        hull = cv2.convexHull(contour)
+
+        # Find the two points with the maximum distance (major axis)
+        max_dist = 0
+        p1 = None
+        p2 = None
+        for i in range(len(hull)):
+            for j in range(i + 1, len(hull)):
+                dist = euclidean_dist(hull[i][0], hull[j][0])
+                if dist > max_dist:
+                    max_dist = dist
+                    p1, p2 = hull[i][0], hull[j][0]
+
+        # DEBUG (longest line)
+        # Visualize the longest line
+        # visualize_line(p1, p2)
+
+        # Calculate the rotated bounding box of the hull
+        rect = cv2.minAreaRect(contour)
+        box_points = cv2.boxPoints(rect)
+
+        # Make rotated bbox for visualization purposes
+        normalized_box_points = []
+        for point in box_points:
+            normalized_box_points.append(
+                [point[0] / media.width, point[1] / media.height]
+            )
+        rotated_bbox.append(
+            {
+                "type": args.get("poly_type_id"),
+                "version": args.get("version_id"),
+                "media_id": media_id,
+                "frame": poly["frame"],
+                "points": normalized_box_points,
+            }
+        )
+        mid_top = (
+            (box_points[0][0] + box_points[1][0]) // 2,
+            (box_points[0][1] + box_points[1][1]) // 2,
+        )
+        mid_bottom = (
+            (box_points[2][0] + box_points[3][0]) // 2,
+            (box_points[2][1] + box_points[3][1]) // 2,
+        )
+        mid_left = (
+            (box_points[0][0] + box_points[3][0]) // 2,
+            (box_points[0][1] + box_points[3][1]) // 2,
+        )
+        mid_right = (
+            (box_points[1][0] + box_points[2][0]) // 2,
+            (box_points[1][1] + box_points[2][1]) // 2,
+        )
+
+        # Are top and bottom or left and right points further?
+        if euclidean_dist(mid_top, mid_bottom) < euclidean_dist(mid_left, mid_right):
+            bisecting_line = (mid_top, mid_bottom)
+            translation_line = (mid_left, mid_right)
+        else:
+            bisecting_line = (mid_left, mid_right)
+            translation_line = (mid_top, mid_bottom)
+
+        # DEBUG visualize bisecting line
+        # visualize_line(bisecting_line[0], bisecting_line[1])
+
+        # Slide the bisecting line along the translation line in both directions by
+        # 25% of the length of the translation line to isolate the head + tail of the fish
+        translation_length = euclidean_dist(translation_line[0], translation_line[1])
+        translation_vector = np.array(
+            [
+                (translation_line[1][0] - translation_line[0][0]) / translation_length,
+                (translation_line[1][1] - translation_line[0][1]) / translation_length,
+            ]
+        )
+        head_line = bisecting_line - (0.33 * translation_length * translation_vector)
+
+        visualize_line(head_line[0], head_line[1])
+
+        tail_line = bisecting_line + (0.33 * translation_length * translation_vector)
+
+        visualize_line(tail_line[0], tail_line[1])
+
+        tail_end_line = bisecting_line + (0.5 * translation_length * translation_vector)
+        head_end_line = bisecting_line - (0.5 * translation_length * translation_vector)
+
+        # create a mask of the fish
+        mask, x_min, y_min = create_mask(contour.reshape(-1, 2))
+
+        # Copy mask and blank out anything not within the tail_end_line and head_end_line
+        tail_mask = np.zeros_like(mask)
+        head_mask = np.zeros_like(mask)
+
+        for y in range(mask.shape[0]):
+            for x in range(mask.shape[1]):
+                # Determine if the point is between tail_line and tail_end_line or head_line and head_end_line
+                norm_tail_end = tail_end_line - np.array((x_min, y_min))
+                norm_tail = tail_line - np.array((x_min, y_min))
+                norm_head_end = head_end_line - np.array((x_min, y_min))
+                norm_head = head_line - np.array((x_min, y_min))
+                if is_point_between_lines((x, y), norm_tail, norm_tail_end):
+                    tail_mask[y, x] = mask[y, x]
+                if is_point_between_lines((x, y), norm_head, norm_head_end):
+                    head_mask[y, x] = mask[y, x]
+
+        # Sanity check calculate centroid of mask + draw line to 1,1
+        moments = cv2.moments(tail_mask)
+        if moments["m00"] == 0:
+            continue
+        tail_centroid = [
+            int(moments["m10"] / moments["m00"]),
+            int(moments["m01"] / moments["m00"]),
+        ]
+
+        moments = cv2.moments(head_mask)
+        if moments["m00"] == 0:
+            continue
+        head_centroid = [
+            int(moments["m10"] / moments["m00"]),
+            int(moments["m01"] / moments["m00"]),
+        ]
+
+        # calculate out the line if it were to extend for the shape of the mask
+        extended_line = extend_line_to_image_bounds(
+            head_centroid, tail_centroid, mask.shape
+        )
+
+        print(f"p1={head_centroid} p2={tail_centroid} extended_line={extended_line}")
+
+        contour_min = contour.reshape(-1, 2) - [x_min, y_min]
+
+        # Use a set in case we hit a boundary exactly and get duped
+        boundary_hits = set()
+        for idx in range(len(contour_min) - 1):
+            p1 = contour_min[idx]
+            p2 = contour_min[idx + 1]
+            intersection = line_intersection([p1, p2], extended_line)
+            # Check if intersection is along the segment specified by p1,p2
+            if intersection is not None:
+                if min(p1[0], p2[0]) <= intersection[0] <= max(p1[0], p2[0]) and min(
+                    p1[1], p2[1]
+                ) <= intersection[1] <= max(p1[1], p2[1]):
+                    print(f"Intersection = {intersection}, points={p1};{p2}")
+                    boundary_hits.add(tuple(intersection))
+
+        if len(boundary_hits) != 2:
+            print(f"Boundary hits = {len(boundary_hits)}")
+            continue
+
+        # convert to list to make mutable
+        boundary_hits = [list(hit) for hit in boundary_hits]
+
+        boundary_hits[0][0] += x_min
+        boundary_hits[0][1] += y_min
+        boundary_hits[1][0] += x_min
+        boundary_hits[1][1] += y_min
+
+        x = boundary_hits[0][0] / media.width
+        y = boundary_hits[0][1] / media.height
+        u = (boundary_hits[1][0] - boundary_hits[0][0]) / media.width
+        v = (boundary_hits[1][1] - boundary_hits[0][1]) / media.height
+        measurement_lines.append((x, y, u, v, poly["frame"]))
+
+        # DEBUG symmetry line
+
+        # Symmetry line (isn't that great)
+        # Calculate the line of symmetry of the hull
+        # Find the centroid of the hull
+        moments = cv2.moments(mask)
+        if moments["m00"] == 0:
+            continue
+        centroid = [
+            int(moments["m10"] / moments["m00"]),
+            int(moments["m01"] / moments["m00"]),
+        ]
+        centroid[0] += x_min
+        centroid[1] += y_min
+        contour_reshaped = contour.reshape((-1, 2))
+        cov_matrix = np.cov(contour_reshaped, rowvar=False)
+
+        eigenvalues, eigenvectors = np.linalg.eig(cov_matrix)
+
+        # Find the principal axis
+        principal_axis = eigenvectors[np.argmax(eigenvalues)]
+        # Convert to image coordinates
+        principal_axis[1] *= -1
+
+        length = 200
+        p1 = centroid - (length * principal_axis)
+        p2 = centroid + (length * principal_axis)
+
+        visualize_line(p1, p2)
+
+    # Take top-3 longest major axis lines
+    # major_lines = major_lines[:3]
+
+    new = []
+    for line in measurement_lines:
+        measurement_spec = {
+            "type": args.get("line_type_id"),
+            "version": args.get("version_id"),
+            "media_id": media_id,
+            "frame": line[4],
+            "x": line[0],
+            "y": line[1],
+            "u": line[2],
+            "v": line[3],
+        }
+        new.append(measurement_spec)
+
+    if args.get("visualize", False):
+        for line in visualizations:
+            measurement_spec = {
+                "type": args.get("line_type_id"),
+                "version": args.get("version_id"),
+                "media_id": media_id,
+                "frame": line[4],
+                "x": line[0],
+                "y": line[1],
+                "u": line[2],
+                "v": line[3],
+            }
+            new.append(measurement_spec)
+
+    for box in rotated_bbox:
+        new.append(box)
+
+    return True, {"$replace": new}
+
+
 def measure_classify_poly(media_id, proposed_track_element, **args):
     api = tator.get_api(host=args["host"], token=args["token"])
     media = api.get_media(media_id)
@@ -130,7 +467,7 @@ def measure_classify_poly(media_id, proposed_track_element, **args):
         # Find the label with the highest score
         max_label = max(class_labels, key=lambda x: sum(class_labels[x]))
 
-        #if max_label != "Scallop":
+        # if max_label != "Scallop":
         #    print("Not a scallop")
         #    return False, {}
 
