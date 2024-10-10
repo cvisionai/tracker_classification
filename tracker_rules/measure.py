@@ -8,6 +8,15 @@ from pprint import pprint
 from collections import defaultdict
 import json
 
+# Libraries to handle loading the matlab file
+import gzip
+import io
+import base64
+import tempfile
+import uuid
+
+from .pyStereoComp import pyStereoComp
+
 
 def create_mask(polygon):
     # Create a blank mask
@@ -182,16 +191,86 @@ def line_intersection(line1, line2):
     return x, y
 
 
+MEMOIZED_VOID_POLY = None
+
+
+def calculate_void_poly(void_base64):
+    global MEMOIZED_VOID_POLY
+    if type(MEMOIZED_VOID_POLY) is not type(None):
+        return MEMOIZED_VOID_POLY
+
+    data = base64.b64decode(void_base64)
+    with io.BytesIO(data) as mem_file:
+        with gzip.GzipFile(fileobj=mem_file, mode="rb") as f:
+            void_mask = np.load(f)
+            void_contours, _ = cv2.findContours(
+                void_mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            void_contour = np.squeeze(void_contours[0])
+            MEMOIZED_VOID_POLY = void_contour.copy()
+            return MEMOIZED_VOID_POLY
+
+
+def get_length_depth(stereo, left, right, media_width):
+
+    # Shift right line over to match the image coordinate space
+    right[0] -= media_width // 2
+    right[2] -= media_width // 2
+
+    # Verify left_line and right_line are both in ascending point order (left to right and top to bottom)
+    dot = np.dot(
+        [left[2] - left[0], left[3] - left[1]],
+        [right[2] - right[0], right[3] - right[1]],
+    )
+    if dot < 0.0:
+        left = left[2], left[3], left[0], left[1]
+
+    xyz0, xyz0a = stereo.triangulatePoint(
+        np.array([[left[0]], [left[1]]]), np.array([[right[0]], [right[1]]])
+    )
+    xyz1, xyz1a = stereo.triangulatePoint(
+        np.array([[left[2]], [left[3]]]), np.array([[right[2]], [right[3]]])
+    )
+    depth = abs((xyz0[2][0] + xyz1[2][0]) / 2)
+    depth /= 1000.0
+    length = np.linalg.norm(xyz0 - xyz1)
+    length /= 1000.0
+    return {"depth": depth, "length": length, "vector": np.abs(xyz1 - xyz0) / 1000.0}
+
+
 def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
+
+    track_id = int(args["track_id"])
+    # Don't do anything with unassociated detections
+    if track_id == -1:
+        if args.get("drop_unassociated", False):
+            return False, {}
+        else:
+            return True, {}
     api = tator.get_api(host=args["host"], token=args["token"])
     media = api.get_media(media_id)
 
     polys = [p for p in proposed_track_element if p.get("points", []) != []]
     boxes = [p for p in proposed_track_element if p.get("x") is not None]
 
+    min_length = args.get("min_length", 0)
+    length = max(len(polys), len(boxes))
+    if length < min_length:
+        return False, {}
+
     measurement_lines = []
     rotated_bbox = []
     visualizations = []
+
+    # Load stereo cal out of b64 gz'd matlab file
+    stereo_comp = pyStereoComp()
+    stereo_data_b64 = args["stereo_calibration"]["matlab"]
+    stereo_data_gz = base64.b64decode(stereo_data_b64)
+    stereo_data = gzip.decompress(stereo_data_gz)
+    with tempfile.TemporaryDirectory() as td:
+        with open(f"{td}/stereo_calibration.mat", "wb") as f:
+            f.write(stereo_data)
+        stereo_comp.importCalData(f"{td}/stereo_calibration.mat")
 
     def visualize_line(p1, p2):
         x = p1[0] / media.width
@@ -232,9 +311,14 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
         # Make rotated bbox for visualization purposes
         normalized_box_points = []
         for point in box_points:
+            # clip to image bounds
+            point[0] = max(0, min(point[0], media.width))
+            point[1] = max(0, min(point[1], media.height))
+
             normalized_box_points.append(
                 [point[0] / media.width, point[1] / media.height]
             )
+
         rotated_bbox.append(
             {
                 "type": args.get("poly_type_id"),
@@ -242,6 +326,7 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
                 "media_id": media_id,
                 "frame": poly["frame"],
                 "points": normalized_box_points,
+                "attributes": {"Confidence": poly["attributes"]["Confidence"]},
             }
         )
         mid_top = (
@@ -328,14 +413,88 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
             int(moments["m01"] / moments["m00"]),
         ]
 
+        margin = 20
+        with_margin_shape = (mask.shape[0] + margin, mask.shape[1] + margin)
+        hc_margin = [head_centroid[0] + margin // 2, head_centroid[1] + margin // 2]
+        tc_margin = [tail_centroid[0] + margin // 2, tail_centroid[1] + margin // 2]
         # calculate out the line if it were to extend for the shape of the mask
         extended_line = extend_line_to_image_bounds(
-            head_centroid, tail_centroid, mask.shape
+            hc_margin, tc_margin, with_margin_shape
         )
 
         contour_min = contour.reshape(-1, 2) - [x_min, y_min]
+        contour_min += margin // 2
+
+        line_bitmask = np.zeros(with_margin_shape, dtype=np.uint8)
+        fish_bitmask = np.zeros(with_margin_shape, dtype=np.uint8)
+        # Draw the outline of the contour
+        # Use a thick line to handle sharp corners
+        # We will filter out duplicate hits later
+        fish_bitmask = cv2.polylines(
+            fish_bitmask, [contour_min], isClosed=True, color=255, thickness=3
+        )
+        # Draw the extended line through this shape
+        line_bitmask = cv2.line(
+            line_bitmask,
+            (int(extended_line[0][0]), int(extended_line[0][1])),
+            (int(extended_line[1][0]), int(extended_line[1][1])),
+            255,
+            1,
+        )
+
+        line_finder = cv2.bitwise_and(fish_bitmask, line_bitmask)
+
+        # find the points that are 255 which indicate the intersection points
+        intersection_points = np.argwhere(line_finder == 255)
+        if len(intersection_points) < 2:
+            print(
+                f"Intersection points frame={poly['frame']} {len(intersection_points)}"
+            )
+            debug = cv2.line(
+                fish_bitmask,
+                (int(extended_line[0][0]), int(extended_line[0][1])),
+                (int(extended_line[1][0]), int(extended_line[1][1])),
+                255,
+                1,
+            )
+            cv2.imwrite(f"line_finder_{poly['frame']}.png", debug)
+            continue
+
+        # sort by distance to the center of the mask (with_margin_shape)
+        # pick two points on opposite sides of the center furthest from the center
+        center = [with_margin_shape[1] // 2, with_margin_shape[0] // 2]
+
+        down_or_left = []
+        up_or_right = []
+        for point in intersection_points:
+            if point[0] >= center[0] or point[1] >= center[1]:
+                up_or_right.append(point)
+            else:
+                down_or_left.append(point)
+
+        down_or_left = sorted(
+            down_or_left,
+            key=lambda x: euclidean_dist(center, x),
+            reverse=True,
+        )
+
+        up_or_right = sorted(
+            up_or_right,
+            key=lambda x: euclidean_dist(center, x),
+            reverse=True,
+        )
+
+        if len(down_or_left) < 1 or len(up_or_right) < 1:
+            continue
+
+        # x-y are reversed for down_or_left and up_or_right
+        p1 = down_or_left[0][::-1]
+        p2 = up_or_right[0][::-1]
+
+        boundary_hits = [p1, p2]
 
         # Use a set in case we hit a boundary exactly and get duped
+        """
         boundary_hits = set()
         for idx in range(len(contour_min) - 1):
             p1 = contour_min[idx]
@@ -354,11 +513,11 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
 
         # convert to list to make mutable
         boundary_hits = [list(hit) for hit in boundary_hits]
-
-        boundary_hits[0][0] += x_min
-        boundary_hits[0][1] += y_min
-        boundary_hits[1][0] += x_min
-        boundary_hits[1][1] += y_min
+        """
+        boundary_hits[0][0] += x_min - (margin // 2)
+        boundary_hits[0][1] += y_min - (margin // 2)
+        boundary_hits[1][0] += x_min - (margin // 2)
+        boundary_hits[1][1] += y_min - (margin // 2)
 
         x = boundary_hits[0][0] / media.width
         y = boundary_hits[0][1] / media.height
@@ -399,19 +558,100 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
     # Take top-3 longest major axis lines
     # major_lines = major_lines[:3]
 
+    attrs = {"Label": "Object"}
+
     new = []
+    by_frame_measurement_lines = defaultdict(lambda: [])
     for line in measurement_lines:
-        measurement_spec = {
-            "type": args.get("line_type_id"),
-            "version": args.get("version_id"),
-            "media_id": media_id,
-            "frame": line[4],
-            "x": line[0],
-            "y": line[1],
-            "u": line[2],
-            "v": line[3],
-        }
-        new.append(measurement_spec)
+        by_frame_measurement_lines[line[4]].append(line)
+
+    measure_frames = []
+    measure_depth = []
+    measure_length = []
+    measure_vectors = []
+    for frame, lines in by_frame_measurement_lines.items():
+        if len(lines) != 2:
+            continue
+        if lines[0][0] < lines[1][0]:
+            left_line = lines[0]
+            right_line = lines[1]
+        else:
+            left_line = lines[1]
+            right_line = lines[0]
+
+        # convert to abs coordinates for stereo comp
+        left_line = [
+            left_line[0] * media.width,
+            left_line[1] * media.height,
+            (left_line[0] + left_line[2]) * media.width,
+            (left_line[1] + left_line[3]) * media.height,
+        ]
+        right_line = [
+            right_line[0] * media.width,
+            right_line[1] * media.height,
+            (right_line[0] + right_line[2]) * media.width,
+            (right_line[1] + right_line[3]) * media.height,
+        ]
+        results = get_length_depth(stereo_comp, left_line, right_line, media.width)
+
+        max_direction = np.argmax(results["vector"])
+        vector = np.round(results["vector"], 2)
+        if max_direction != 2:
+            measure_frames.append(frame)
+            measure_depth.append(round(results["depth"], 3))
+            measure_length.append(round(results["length"], 3))
+            measure_vectors.append(vector)
+        else:
+            print(f"Excluding z-axis measurement Frame={frame}: {vector}")
+
+    if len(measure_length) == 0:
+        return False, {}
+
+    # Calculate the median of the top-quartile of lengths
+    # and find the closest line, which will be our selected measurement line.
+    lengths = np.array(measure_length)
+    median_of_top_quartile = np.median(lengths[lengths > np.percentile(lengths, 75)])
+    closest_idx = np.argmin(np.abs(measure_length - median_of_top_quartile))
+    min_depth = min(measure_depth)
+    max_depth = max(measure_depth)
+    # Comma seperated string of all lengths
+
+    combined = [
+        (length, depth, frame, vector)
+        for frame, length, depth, vector in zip(
+            measure_frames, measure_length, measure_depth, measure_vectors
+        )
+    ]
+
+    # sort by frame
+    combined = sorted(combined, key=lambda x: x[2])
+    all_lengths = ",".join([f"{x[0]}@{x[1]}/{x[2]}|Vec={x[3]}" for x in combined])
+
+    if min_depth > args.get("maximum_min_depth", 0.0):
+        attrs["Label"] = "Bad Depth"
+    maximum_length = measure_length[closest_idx]
+    attrs["AllLengths"] = all_lengths
+    attrs["Distance"] = measure_depth[closest_idx]
+    attrs["Length"] = maximum_length
+    attrs["MinDistance"] = min_depth
+    attrs["MaxDistance"] = max_depth
+    attrs["MeasurementFrame"] = measure_frames[closest_idx]
+    attrs["Measurement Method"] = "Computer"
+
+    measure_frame = measure_frames[max_measure_length_idx]
+    for lines in by_frame_measurement_lines.values():
+        for line in lines:
+            measurement_spec = {
+                "type": args.get("line_type_id"),
+                "version": args.get("version_id"),
+                "media_id": media_id,
+                "frame": line[4],
+                "x": line[0],
+                "y": line[1],
+                "u": line[2],
+                "v": line[3],
+            }
+            new.append(measurement_spec)
 
     if args.get("visualize", False):
         for line in visualizations:
@@ -430,7 +670,7 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
     for box in rotated_bbox:
         new.append(box)
 
-    return True, {"$replace": new}
+    return True, {**attrs, "$replace": new}
 
 
 def measure_classify_poly(media_id, proposed_track_element, **args):
