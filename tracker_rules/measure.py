@@ -256,7 +256,7 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
     min_length = args.get("min_length", 0)
     length = max(len(polys), len(boxes))
     if length < min_length:
-        return False, {}
+        return False, {"Label": "Too Short"}
 
     measurement_lines = []
     rotated_bbox = []
@@ -326,6 +326,7 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
                 "media_id": media_id,
                 "frame": poly["frame"],
                 "points": normalized_box_points,
+                "elemental_id": str(uuid.uuid4()),
                 "attributes": {"Confidence": poly["attributes"]["Confidence"]},
             }
         )
@@ -594,26 +595,38 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
         ]
         results = get_length_depth(stereo_comp, left_line, right_line, media.width)
 
-        max_direction = np.argmax(results["vector"])
         vector = np.round(results["vector"], 2)
-        if max_direction != 2:
-            measure_frames.append(frame)
-            measure_depth.append(round(results["depth"], 3))
-            measure_length.append(round(results["length"], 3))
-            measure_vectors.append(vector)
-        else:
-            print(f"Excluding z-axis measurement Frame={frame}: {vector}")
+        measure_frames.append(frame)
+        measure_depth.append(round(results["depth"], 3))
+        measure_length.append(round(results["length"], 3))
+        measure_vectors.append(vector)
 
     if len(measure_length) == 0:
-        return False, {}
+        return False, {"Label": "No Measures"}
 
     # Calculate the median of the top-quartile of lengths
     # and find the closest line, which will be our selected measurement line.
-    lengths = np.array(measure_length)
-    median_of_top_quartile = np.median(lengths[lengths > np.percentile(lengths, 75)])
+
+    z_indices = []
+    for vector in measure_vectors:
+        z_indices.append(vector[2])
+    z_indices = np.array(z_indices)
+
+    bottom_limit = np.percentile(z_indices, 25)
+    valid_idx = np.where(z_indices <= bottom_limit)[0]
+
+    # Collect lengths only from valid_idx
+    measure_length = np.array(measure_length)
+
+    # Calculate the best length of the top quartile with the least amount of z-axis
+    lengths = np.array(measure_length)[valid_idx]
+    depths = np.array(measure_depth)[valid_idx]
+    median_of_top_quartile = np.median(lengths[lengths >= np.percentile(lengths, 75)])
     closest_idx = np.argmin(np.abs(measure_length - median_of_top_quartile))
-    min_depth = min(measure_depth)
-    max_depth = max(measure_depth)
+
+    # Calculate the min and max depth on all frames we got a detection
+    min_depth = min(depths)
+    max_depth = max(depths)
     # Comma seperated string of all lengths
 
     combined = [
@@ -638,7 +651,6 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
     attrs["MeasurementFrame"] = measure_frames[closest_idx]
     attrs["Measurement Method"] = "Computer"
 
-    measure_frame = measure_frames[max_measure_length_idx]
     for lines in by_frame_measurement_lines.values():
         for line in lines:
             measurement_spec = {
@@ -650,6 +662,7 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
                 "y": line[1],
                 "u": line[2],
                 "v": line[3],
+                "elemental_id": str(uuid.uuid4()),
             }
             new.append(measurement_spec)
 
