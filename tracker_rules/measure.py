@@ -316,8 +316,13 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
             point[1] = max(0, min(point[1], media.height))
 
             normalized_box_points.append(
-                [point[0] / media.width, point[1] / media.height]
+                [
+                    max(0, min(1, point[0] / media.width)),
+                    max(0, min(1, point[1] / media.height)),
+                ]
             )
+
+            # Clip to 0,1
 
         rotated_bbox.append(
             {
@@ -658,10 +663,10 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
                 "version": args.get("version_id"),
                 "media_id": media_id,
                 "frame": line[4],
-                "x": line[0],
-                "y": line[1],
-                "u": line[2],
-                "v": line[3],
+                "x": max(0, min(1, line[0])),  # clip to 0-1
+                "y": max(0, min(1, line[1])),
+                "u": max(0, min(1, line[2])),
+                "v": max(0, min(1, line[3])),
                 "elemental_id": str(uuid.uuid4()),
             }
             new.append(measurement_spec)
@@ -673,10 +678,10 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
                 "version": args.get("version_id"),
                 "media_id": media_id,
                 "frame": line[4],
-                "x": line[0],
-                "y": line[1],
-                "u": line[2],
-                "v": line[3],
+                "x": max(0, min(1, line[0])),  # clip to 0-1
+                "y": max(0, min(1, line[1])),
+                "u": max(0, min(1, line[2])),
+                "v": max(0, min(1, line[3])),
             }
             new.append(measurement_spec)
 
