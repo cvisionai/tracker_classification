@@ -630,8 +630,8 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
     closest_idx = np.argmin(np.abs(measure_length - median_of_top_quartile))
 
     # Calculate the min and max depth on all frames we got a detection
-    min_depth = min(depths)
-    max_depth = max(depths)
+    min_depth = min(measure_depth)
+    max_depth = max(measure_depth)
     # Comma seperated string of all lengths
 
     combined = [
