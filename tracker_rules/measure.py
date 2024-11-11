@@ -665,8 +665,8 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
                 "frame": line[4],
                 "x": max(0, min(1, line[0])),  # clip to 0-1
                 "y": max(0, min(1, line[1])),
-                "u": max(0, min(1, line[2])),
-                "v": max(0, min(1, line[3])),
+                "u": max(-1, min(1, line[2])),  # clip to -1 to 1
+                "v": max(-1, min(1, line[3])),
                 "elemental_id": str(uuid.uuid4()),
             }
             new.append(measurement_spec)
@@ -680,8 +680,8 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
                 "frame": line[4],
                 "x": max(0, min(1, line[0])),  # clip to 0-1
                 "y": max(0, min(1, line[1])),
-                "u": max(0, min(1, line[2])),
-                "v": max(0, min(1, line[3])),
+                "u": max(-1, min(1, line[2])),  # clip to -1 to 1
+                "v": max(1, min(1, line[3])),
             }
             new.append(measurement_spec)
 
