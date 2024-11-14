@@ -466,7 +466,7 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
                 255,
                 1,
             )
-            cv2.imwrite(f"line_finder_{poly['frame']}.png", debug)
+            # cv2.imwrite(f"line_finder_{poly['frame']}.png", debug)
             continue
 
         # sort by distance to the center of the mask (with_margin_shape)
