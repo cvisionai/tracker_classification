@@ -259,7 +259,7 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
     if length < min_length:
         return False, {"Label": "Too Short"}
     if length > max_length:
-        return False, {"Label": "Too Long"}
+        return True, {"Label": "Too Long"}
 
     measurement_lines = []
     rotated_bbox = []
