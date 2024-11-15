@@ -254,7 +254,7 @@ def measure_classify_groundfish_poly(media_id, proposed_track_element, **args):
     boxes = [p for p in proposed_track_element if p.get("x") is not None]
 
     min_length = args.get("min_length", 0)
-    max_length = args.get("max_length", 1000)
+    max_length = args.get("max_length", 2000)  # both frames so 2000 is 1000
     length = max(len(polys), len(boxes))
     if length < min_length:
         return False, {"Label": "Too Short"}
