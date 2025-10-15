@@ -75,6 +75,7 @@ def worms_classify(media_id, proposed_track_element, **args):
             aphia_record = json.loads(response.content)
             rank = _worms_rank_to_portal(aphia_record["rank"])
             extended_attrs["LabelRank"] = rank
+            extended_attrs["Object type"] = "biota"
             if rank == "Species":
                 species = (
                     aphia_record["scientificname"]
