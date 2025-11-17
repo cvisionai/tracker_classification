@@ -1,6 +1,9 @@
 import requests
 import json
 
+# Link to Fathomnet WoRMs GitHub
+# https://github.com/fathomnet/worms-server
+
 wormsApi = {
   "aphiaLookup": "https://database.fathomnet.org/worms/names/aphiaid/",
   "queryContains": "https://database.fathomnet.org/worms/query/contains/", 
