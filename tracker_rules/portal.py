@@ -127,7 +127,7 @@ def worms_classify(media_id, proposed_track_element, **args):
     box_label_attr = args.get("box_label_attribute", "Label")
     box_confidence_attr = args.get("box_label_attribute", "Confidence")
     label = proposed_track_element[0]["attributes"].get(box_label_attr, "Unknown")
-    print(f"WORMS query for label '{label}'")
+    # print(f"WORMS query for label '{label}'")
     response = requests.get(url=f"{wormsApi['taxaStartsWith']}/{label}", timeout=30)
     aphia_id = 0
     results = []
