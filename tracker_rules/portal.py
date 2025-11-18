@@ -1,7 +1,60 @@
 import requests
 import json
 
-WORMS_API_URL = "https://marinespecies.org/rest"
+# Link to Fathomnet WoRMs GitHub
+# https://github.com/fathomnet/worms-server
+
+wormsApi = {
+  "aphiaLookup": "https://database.fathomnet.org/worms/names/aphiaid/",
+  "queryContains": "https://database.fathomnet.org/worms/query/contains/", 
+  "synonyms": "https://database.fathomnet.org/worms/synonyms/", 
+  "queryStartsWith": "https://database.fathomnet.org/worms/query/startswith", 
+  "taxaAncestors": "https://database.fathomnet.org/worms/taxa/ancestors", 
+  "taxaChildren": "https://database.fathomnet.org/worms/taxa/children", 
+  "taxaStartsWith": "https://database.fathomnet.org/worms/taxa/query/startswith", 
+  "taxaContains": "https://database.fathomnet.org/worms/taxa/query/contains",
+}
+
+taxaFields = [
+    "Kingdom",
+    "Subkingdom",
+    "Phylum",
+    "Subphylum",
+    "Infraphylum",
+    "Parvphylum",
+    "Gigaclass",
+    "Megaclass",
+    "Superclass",
+    "Class",
+    "Subclass",
+    "Infraclass",
+    "Subterclass",
+    "Superorder",
+    "Order",
+    "Suborder",
+    "Infraorder",
+    "Parvorder",
+    "Section",
+    "Subsection",
+    "Superfamily",
+    "Epifamily",
+    "Family",
+    "Subfamily",
+    "Supertribe",
+    "Tribe",
+    "Subtribe",
+    "Genus",
+    "Subgenus",
+    "Species",
+    "Subspecies",
+    "Natio",
+    "Variety",
+    "Subvariety",
+    "Forma",
+    "Subforms",
+    "Mutatio",
+    "Label",
+]
 
 
 def _round_to_bin(float_val):
@@ -15,34 +68,61 @@ def _round_to_bin(float_val):
 
 
 def _worms_rank_to_portal(worms_rank):
-    """Not all worms ranks exist in portal. This truncates to the neartest rank"""
-    portal_ranks = [
-        "Object type",
-        "Kingdom",
-        "Phylum",
-        "Class",
-        "Order",
-        "Family",
-        "Genus",
-        "Species",
-        "null",
-        "Label",
-    ]
     portal_rank = "null"
-    if worms_rank in portal_ranks:
+    if worms_rank in taxaFields:
         portal_rank = worms_rank
-    elif worms_rank in ["Subclass", "Superorder"]:
-        portal_rank = "Class"
-    elif worms_rank in ["Suborder"]:
-        portal_rank = "Order"
-    elif worms_rank in ["Subfamily", "Tribe"]:
-        portal_rank = "Family"
-    elif worms_rank in ["Variety"]:
-        portal_rank = "Species"
     else:
         print(f"WARNING: Unhandled taxonomic level '{worms_rank}'!")
 
     return portal_rank
+
+
+def _parse_tree_children(children, data):
+    """Recursively parse nested tree structure from WoRMS API"""
+    if not children or len(children) == 0:
+        return data
+    
+    child = children[0]
+    
+    # Set rank-specific data
+    if child.get('rank'):
+        data[child['rank']] = child['name']
+    
+    data["Label"] = child['name']
+    data["AphiaID"] = child.get('aphiaId', '')
+    data["LabelRank"] = child.get('rank', 'Label') if child.get('rank') else 'Label'
+    
+    # Handle alternate names (common names)
+    if 'alternateNames' in child and isinstance(child['alternateNames'], list):
+        data["Common name"] = ", ".join(child['alternateNames'])
+    
+    # Recurse into children
+    if child.get('children') and len(child['children']) > 0:
+        return _parse_tree_children(child['children'], data)
+    
+    return data
+
+
+def _nested_tree_to_json(tree_data):
+    """Convert nested tree structure to flat JSON attributes"""
+    new_data = {}
+    
+    # Determine object type
+    if tree_data.get('children') and len(tree_data['children']) > 0:
+        first_child_name = tree_data['children'][0].get('name', 'object')
+        new_data["Object type"] = first_child_name.lower()
+    else:
+        new_data["Object type"] = "object"
+    
+    # Parse the tree based on object type
+    if new_data["Object type"] == "biota":
+        new_data = _parse_tree_children(tree_data.get('children', []), new_data)
+    else:
+        # Non-biota objects (equipment, substrate, etc.)
+        new_data["LabelRank"] = "Label"
+        new_data = _parse_tree_children(tree_data.get('children', []), new_data)
+    
+    return new_data
 
 
 def worms_classify(media_id, proposed_track_element, **args):
@@ -50,10 +130,17 @@ def worms_classify(media_id, proposed_track_element, **args):
     box_label_attr = args.get("box_label_attribute", "Label")
     box_confidence_attr = args.get("box_label_attribute", "Confidence")
     label = proposed_track_element[0]["attributes"].get(box_label_attr, "Unknown")
-    response = requests.get(url=f"{WORMS_API_URL}/AphiaIDByName/{label}", timeout=30)
+    # print(f"WORMS query for label '{label}'")
+    response = requests.get(url=f"{wormsApi['taxaStartsWith']}/{label}", timeout=30)
     aphia_id = 0
+    results = []
     try:
-        aphia_id = json.loads(response.content)
+        results = json.loads(response.content)
+        # print(f"WORMS query for '{label}' returned {results}")
+        # Get the first matching result's aphia ID if available
+        if results and len(results) > 0:
+            aphia_id = results[0].get('aphiaId', 0)
+            aphia_record = results[0]
     except Exception as e:
         print(e)
 
@@ -69,25 +156,34 @@ def worms_classify(media_id, proposed_track_element, **args):
     }
     if aphia_id > 0:
         response = requests.get(
-            url=f"{WORMS_API_URL}/AphiaRecordByAphiaID/{aphia_id}", timeout=30
+            url=f"{wormsApi['taxaAncestors']}/{aphia_record.get('name')}", timeout=30
         )
         if response.status_code == 200:
-            aphia_record = json.loads(response.content)
-            rank = _worms_rank_to_portal(aphia_record["rank"])
+            tree_data = json.loads(response.content)
+            
+            # Parse the nested tree structure
+            parsed_data = _nested_tree_to_json(tree_data)
+            
+            # Update extended attributes with parsed taxonomy
+            rank = parsed_data.get("LabelRank", "Label")
             extended_attrs["LabelRank"] = rank
-            extended_attrs["Object type"] = "biota"
-            if rank == "Species":
-                species = (
-                    aphia_record["scientificname"]
-                    .replace(aphia_record["genus"], "", 1)
-                    .strip()
-                )
-                extended_attrs["Species"] = species
-            for x in ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus"]:
-                record = aphia_record.get(x.lower(), "")
-                if record:
-                    extended_attrs[x] = record
-                    extended_attrs[f"{x}_confidence"] = _round_to_bin(avg_conf)
+            extended_attrs["Object type"] = parsed_data.get("Object type", "biota")
+            
+            # Fields that should have confidence values
+            confidence_fields = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"]
+            
+            # Add all taxonomy fields from parsed data
+            for field in taxaFields:
+                if field in parsed_data:
+                    extended_attrs[field] = parsed_data[field]
+                    # Only add confidence for specific fields
+                    if field in confidence_fields:
+                        extended_attrs[f"{field}_confidence"] = _round_to_bin(avg_conf)
+            
+            # Add common name if present
+            if "Common name" in parsed_data:
+                extended_attrs["Common name"] = parsed_data["Common name"]
+
         else:
             print(f"ERROR: {label} not found in WoRMs API")
 
