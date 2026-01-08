@@ -125,29 +125,64 @@ def _nested_tree_to_json(tree_data):
     return new_data
 
 
+def _parse_override_labels(value):
+    """Parse override labels into a normalized set."""
+    if value is None:
+        return set()
+    if isinstance(value, (list, tuple, set)):
+        parts = value
+    else:
+        parts = str(value).split(",")
+    return {str(x).strip().lower() for x in parts if str(x).strip()}
+
+
 def worms_classify(media_id, proposed_track_element, **args):
     """Update portal attributes based on existing labels"""
     box_label_attr = args.get("box_label_attribute", "Label")
-    box_confidence_attr = args.get("box_label_attribute", "Confidence")
+    box_confidence_attr = args.get("conf_attribute", "Confidence")
     label = proposed_track_element[0]["attributes"].get(box_label_attr, "Unknown")
     # print(f"WORMS query for label '{label}'")
-    response = requests.get(url=f"{wormsApi['taxaStartsWith']}/{label}", timeout=30)
-    aphia_id = 0
-    results = []
-    try:
-        results = json.loads(response.content)
-        # print(f"WORMS query for '{label}' returned {results}")
-        # Get the first matching result's aphia ID if available
-        if results and len(results) > 0:
-            aphia_id = results[0].get('aphiaId', 0)
-            aphia_record = results[0]
-    except Exception as e:
-        print(e)
 
     sum_conf = 0.0
     for x in proposed_track_element:
         sum_conf += x["attributes"].get(box_confidence_attr, 0)
     avg_conf = sum_conf / len(proposed_track_element)
+
+    # Optional nested config blob passthrough.
+    # If present, merge it with top-level args (top-level wins).
+    classify_args = args.get("classify_args")
+    if classify_args:
+        if isinstance(classify_args, str):
+            try:
+                classify_args = json.loads(classify_args)
+            except Exception:
+                classify_args = None
+        if isinstance(classify_args, dict):
+            for k, v in classify_args.items():
+                args.setdefault(k, v)
+
+    override_labels = _parse_override_labels(args.get("classify_override_labels"))
+    if str(label).strip().lower() in override_labels:
+        extended_attrs = {
+            "LabelRank": "Label",
+            "Object type": label,
+            "Object-type_confidence": _round_to_bin(avg_conf),
+        }
+        return True, extended_attrs
+
+    print(f"WORMS query for label '{label}'")
+
+    response = requests.get(url=f"{wormsApi['taxaStartsWith']}/{label}", timeout=30)
+    aphia_id = 0
+    results = []
+    try:
+        results = json.loads(response.content)
+        # Get the first matching result's aphia ID if available
+        if results and len(results) > 0:
+            aphia_id = results[0].get("aphiaId", 0)
+            aphia_record = results[0]
+    except Exception as e:
+        print(e)
 
     extended_attrs = {
         "LabelRank": "Label",
