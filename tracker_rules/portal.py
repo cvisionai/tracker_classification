@@ -162,7 +162,7 @@ def worms_classify(media_id, proposed_track_element, **args):
             for k, v in classify_args.items():
                 args.setdefault(k, v)
 
-    override_labels = _parse_override_labels(args.get("classify_override_labels"), None)
+    override_labels = _parse_override_labels(args.get("classify_override_labels"))
     if args.get("skip_worms_lookup", False) or override_labels:
         
         if override_labels:
