@@ -147,6 +147,7 @@ def worms_classify(media_id, proposed_track_element, **args):
     for x in proposed_track_element:
         sum_conf += x["attributes"].get(box_confidence_attr, 0)
     avg_conf = sum_conf / len(proposed_track_element)
+    object_type_confidence = _round_to_bin(avg_conf)
 
     # Optional nested config blob passthrough.
     # If present, merge it with top-level args (top-level wins).
@@ -161,14 +162,32 @@ def worms_classify(media_id, proposed_track_element, **args):
             for k, v in classify_args.items():
                 args.setdefault(k, v)
 
-    override_labels = _parse_override_labels(args.get("classify_override_labels"))
-    if str(label).strip().lower() in override_labels:
-        extended_attrs = {
-            "LabelRank": "Label",
-            "Object type": label,
-            "Object-type_confidence": _round_to_bin(avg_conf),
-        }
-        return True, extended_attrs
+    override_labels = _parse_override_labels(args.get("classify_override_labels"), None)
+    if args.get("skip_worms_lookup", False) or override_labels:
+        
+        if override_labels:
+            if str(label).strip().lower() in override_labels:
+                extended_attrs = {
+                    "LabelRank": "Label",
+                    "Object type": label,
+                    "Object-type_confidence": object_type_confidence,
+                }
+                return True, extended_attrs
+            else: 
+                extended_attrs = {
+                    "LabelRank": "Label",
+                    "Object type": "object",
+                    "Object-type_confidence": object_type_confidence,
+                }
+                return True, extended_attrs
+        else:
+            extended_attrs = {
+                    "LabelRank": "Label",
+                    "Object type": label,
+                    "Object-type_confidence": object_type_confidence,
+            }
+            return True, extended_attrs
+        
 
     print(f"WORMS query for label '{label}'")
 
@@ -187,7 +206,7 @@ def worms_classify(media_id, proposed_track_element, **args):
     extended_attrs = {
         "LabelRank": "Label",
         "Object type": "object",
-        "Object-type_confidence": _round_to_bin(avg_conf),
+        "Object-type_confidence": object_type_confidence,
     }
     if aphia_id > 0:
         response = requests.get(
@@ -213,7 +232,7 @@ def worms_classify(media_id, proposed_track_element, **args):
                     extended_attrs[field] = parsed_data[field]
                     # Only add confidence for specific fields
                     if field in confidence_fields:
-                        extended_attrs[f"{field}_confidence"] = _round_to_bin(avg_conf)
+                        extended_attrs[f"{field}_confidence"] = object_type_confidence
             
             # Add common name if present
             if "Common name" in parsed_data:
