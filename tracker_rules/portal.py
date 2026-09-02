@@ -1,5 +1,8 @@
 import requests
 import json
+import os
+import re
+import time
 
 # Link to Fathomnet WoRMs GitHub
 # https://github.com/fathomnet/worms-server
@@ -137,6 +140,212 @@ def _parse_override_labels(value):
     return {str(x).strip().lower() for x in parts if str(x).strip()}
 
 
+# ---------------------------------------------------------------------------
+# FathomVerse mission classification
+#
+# fv_obj_* models emit CMS concept (mission) IDs as their class names. This
+# rule resolves each ID through the FathomVerse CMS and mirrors the label
+# mapping in portal-web-ui/server/server.js (missionAttributes /
+# wormsTreeToAttributes):
+#   - includedTaxa of length 1 is authoritative: expand through the WoRMS
+#     ancestors endpoint when the tree's LEAF matches the taxon exactly
+#     (case-insensitive); otherwise apply the taxon verbatim.
+#   - any other length falls back to the mission display name, which is
+#     colloquial and deliberately NOT WoRMS-resolved -- with one rename:
+#     "medusa" becomes "medusae" (Medusa is a real, unrelated genus).
+#
+# CMS auth: FATHOMVERSE_TOKEN env var (ApiKey) is exchanged for a short-lived
+# bearer. The token comes ONLY from the environment (a k8s secret on the
+# worker pod), never from classify_args -- strategy blobs are logged.
+# ---------------------------------------------------------------------------
+
+CMS_AUTH_URL_DEFAULT = "https://cms-stage.fathomverse.game:448/auth/v1/token"
+CMS_MISSIONS_URL_DEFAULT = "https://cms-stage.fathomverse.game:448/portal/v2/missions"
+
+_cms_bearer_cache = {"token": None, "expires_at": 0.0}
+_mission_attr_cache = {}
+_worms_exact_cache = {}
+
+
+def _merge_classify_args(args):
+    """Merge the optional nested classify_args blob into args (top-level wins)."""
+    classify_args = args.get("classify_args")
+    if classify_args:
+        if isinstance(classify_args, str):
+            try:
+                classify_args = json.loads(classify_args)
+            except Exception:
+                classify_args = None
+        if isinstance(classify_args, dict):
+            for k, v in classify_args.items():
+                args.setdefault(k, v)
+    return args
+
+
+def _get_cms_bearer(auth_url):
+    now = time.time()
+    if _cms_bearer_cache["token"] and now < _cms_bearer_cache["expires_at"] - 30:
+        return _cms_bearer_cache["token"]
+    api_key = os.environ.get("FATHOMVERSE_TOKEN", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "FATHOMVERSE_TOKEN env var is not set (expected from the "
+            "fathomverse-token k8s secret on the worker pod)"
+        )
+    response = requests.post(
+        auth_url, headers={"Authorization": f"ApiKey {api_key}"}, timeout=30
+    )
+    response.raise_for_status()
+    data = response.json()
+    _cms_bearer_cache["token"] = data["access_token"]
+    try:
+        ttl = float(data.get("expires_in") or 300)
+    except (TypeError, ValueError):
+        ttl = 300.0
+    _cms_bearer_cache["expires_at"] = now + ttl
+    return _cms_bearer_cache["token"]
+
+
+def _worms_exact_attributes(taxon_name):
+    """taxa/ancestors lookup accepted only when the tree LEAF is exactly the
+    requested taxon. Definitive answers (parsed tree or 404) are cached;
+    transient failures are not. Returns attrs dict or None."""
+    key = str(taxon_name).lower()
+    if key in _worms_exact_cache:
+        return _worms_exact_cache[key]
+    try:
+        response = requests.get(
+            url=f"{wormsApi['taxaAncestors']}/{taxon_name}", timeout=30
+        )
+    except requests.RequestException as err:
+        print(f"WARNING: WoRMS lookup failed for '{taxon_name}': {err}")
+        return None
+    if response.status_code == 404:
+        _worms_exact_cache[key] = None
+        return None
+    if response.status_code != 200:
+        print(f"WARNING: WoRMS lookup for '{taxon_name}' returned {response.status_code}")
+        return None
+
+    tree = response.json()
+    children = tree.get("children") or []
+    node = children[0] if children else None
+    if node is None:
+        _worms_exact_cache[key] = None
+        return None
+    attrs = {"Object type": str(node.get("name") or "object").lower()}
+    is_biota = attrs["Object type"] == "biota"
+    leaf = None
+    while node:
+        rank = node.get("rank")
+        if is_biota and rank:
+            if rank in taxaFields:
+                attrs[rank] = node.get("name")
+            else:
+                print(f"WARNING: Unhandled taxonomic level '{rank}'!")
+        leaf = node
+        node_children = node.get("children") or []
+        node = node_children[0] if node_children else None
+    if (
+        not leaf
+        or not leaf.get("name")
+        or str(leaf["name"]).lower() != str(taxon_name).lower()
+    ):
+        _worms_exact_cache[key] = None
+        return None
+    attrs["Label"] = leaf["name"]
+    attrs["LabelRank"] = leaf.get("rank") or "Label"
+    attrs["AphiaID"] = str(leaf["aphiaId"]) if leaf.get("aphiaId") else ""
+    alternate = leaf.get("alternateNames")
+    if isinstance(alternate, list) and alternate:
+        attrs["Common name"] = ", ".join(alternate)
+    _worms_exact_cache[key] = attrs
+    return attrs
+
+
+def _fathomverse_mission_attributes(concept_id, auth_url, missions_url):
+    """Resolve a CMS mission id to observation attributes, or None."""
+    key = str(concept_id)
+    if key in _mission_attr_cache:
+        return _mission_attr_cache[key]
+    try:
+        bearer = _get_cms_bearer(auth_url)
+        response = requests.get(
+            f"{missions_url}/{concept_id}",
+            headers={"Authorization": f"Bearer {bearer}"},
+            timeout=30,
+        )
+    except (requests.RequestException, RuntimeError) as err:
+        print(f"WARNING: mission {concept_id} fetch failed: {err}")
+        return None
+    if response.status_code != 200:
+        print(f"WARNING: mission {concept_id} fetch returned {response.status_code}")
+        return None
+    mission = response.json()
+
+    taxa = mission.get("includedTaxa")
+    if isinstance(taxa, list):
+        taxa = [t.strip() for t in taxa if isinstance(t, str) and t.strip()]
+    else:
+        taxa = []
+    if len(taxa) == 1:
+        attrs = _worms_exact_attributes(taxa[0])
+        if attrs is None:
+            attrs = {"Label": taxa[0], "LabelRank": "Label", "Object type": "object"}
+    else:
+        name = str(mission.get("Name") or mission.get("name") or "").strip()
+        if re.fullmatch("medusa", name, re.IGNORECASE):
+            name = f"{name}e"
+        if not name:
+            _mission_attr_cache[key] = None
+            return None
+        attrs = {"Label": name, "LabelRank": "Label", "Object type": "object"}
+    _mission_attr_cache[key] = attrs
+    return attrs
+
+
+def fathomverse_classify(media_id, proposed_track_element, **args):
+    """Map a track's FathomVerse concept-id label to portal attributes."""
+    args = _merge_classify_args(args)
+    box_label_attr = args.get("box_label_attribute", "Label")
+    box_confidence_attr = args.get("conf_attribute", "Confidence")
+    concept_id = proposed_track_element[0]["attributes"].get(box_label_attr, "Unknown")
+
+    sum_conf = 0.0
+    for x in proposed_track_element:
+        sum_conf += x["attributes"].get(box_confidence_attr, 0)
+    avg_conf = sum_conf / len(proposed_track_element)
+    object_type_confidence = _round_to_bin(avg_conf)
+
+    auth_url = args.get("cms_auth_url") or os.environ.get("CMS_AUTH_URL") or CMS_AUTH_URL_DEFAULT
+    missions_url = (
+        args.get("cms_missions_url") or os.environ.get("CMS_MISSIONS_URL") or CMS_MISSIONS_URL_DEFAULT
+    )
+
+    attrs = _fathomverse_mission_attributes(str(concept_id).strip(), auth_url, missions_url)
+    if attrs is None:
+        # Keep the track visible rather than dropping it silently.
+        print(f"WARNING: no mission mapping for concept '{concept_id}'; keeping raw label")
+        attrs = {"Label": str(concept_id), "LabelRank": "Label", "Object type": "object"}
+
+    extended_attrs = {
+        "LabelRank": attrs.get("LabelRank", "Label"),
+        "Object type": attrs.get("Object type", "object"),
+        "Object-type_confidence": object_type_confidence,
+    }
+    confidence_fields = ["Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"]
+    for field in taxaFields:
+        if field in attrs:
+            extended_attrs[field] = attrs[field]
+            if field in confidence_fields:
+                extended_attrs[f"{field}_confidence"] = object_type_confidence
+    for field in ("Label", "AphiaID", "Common name"):
+        if field in attrs:
+            extended_attrs[field] = attrs[field]
+
+    return True, extended_attrs
+
+
 def worms_classify(media_id, proposed_track_element, **args):
     """Update portal attributes based on existing labels"""
     box_label_attr = args.get("box_label_attribute", "Label")
@@ -162,6 +371,9 @@ def worms_classify(media_id, proposed_track_element, **args):
         if isinstance(classify_args, dict):
             for k, v in classify_args.items():
                 args.setdefault(k, v)
+
+    if args.get("fathomverse_missions", False):
+        return fathomverse_classify(media_id, proposed_track_element, **args)
 
     override_labels = _parse_override_labels(args.get("classify_override_labels"))
     if args.get("skip_worms_lookup", False) or override_labels:
